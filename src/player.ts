@@ -2,7 +2,7 @@
  * Mutable ADT representing a player in the Memory Scramble game.
  * 
  * A player is identified by a unique string ID and tracks their game statistics
- * including flip attempts and successful matches.
+ * including flip attempts and successful matches, as well as their current game state.
  */
 
 export class Player {
@@ -10,24 +10,31 @@ export class Player {
     private displayName: string;
     private flips: number;
     private matches: number;
-
-        // Rep invariant:
+    private firstCard: { row: number; col: number } | null;
+    private secondCard: { row: number; col: number } | null;
+    
+      // Rep invariant:
     //   - id is a nonempty string with no whitespace
     //   - displayName is a nonempty string
     //   - flips >= 0, is an integer
     //   - matches >= 0, is an integer
+    //   - firstCard is null or an object with integer row and col
+    //   - secondCard is null or an object with integer row and col
     //
     // Abstraction function:
-    //   AF(id, displayName, flips, matches) =
+    //   AF(id, displayName, flips, matches, firstCard, secondCard) =
     //     A player with unique identifier 'id', human-readable name 'displayName',
-    //     who has performed 'flips' flip attempts and completed 'matches' successful pairs
+    //     who has performed 'flips' flip attempts and completed 'matches' successful pairs,
+    //     currently controlling firstCard (if not null) and secondCard (if not null)
     //
     // Safety from rep exposure:
     //   - All fields are private
     //   - id is readonly; id and displayName are strings (immutable)
     //   - flips and matches are numbers (immutable primitives)
-    //   - All observers return immutable primitives
+    //   - All observers return immutable primitives or null
+    //   - firstCard and secondCard getters return copies of the objects
     //   - No mutable objects are shared with clients
+
 
     /**
      * Create a new player.
@@ -41,6 +48,8 @@ export class Player {
         this.displayName = playerDisplayName;
         this.flips = 0;
         this.matches = 0;
+        this.firstCard = null;
+        this.secondCard = null;
         this.checkRep();
     }
 
@@ -99,6 +108,57 @@ export class Player {
     public getMatches(): number { return this.matches; }
 
     /**
+     * Get the first card position controlled by this player.
+     * @returns copy of first card position or null if none
+     */
+    public getFirstCard(): { row: number; col: number } | null {
+        return this.firstCard ? { ...this.firstCard } : null;
+    }
+
+    /**
+     * Set the first card position for this player.
+     * @param position card position or null to clear
+     */
+    public setFirstCard(position: { row: number; col: number } | null): void {
+        this.firstCard = position;
+        this.checkRep();
+    }
+
+    /**
+     * Get the second card position controlled by this player.
+     * @returns copy of second card position or null if none
+     */
+    public getSecondCard(): { row: number; col: number } | null {
+        return this.secondCard ? { ...this.secondCard } : null;
+    }
+
+    /**
+     * Set the second card position for this player.
+     * @param position card position or null to clear
+     */
+    public setSecondCard(position: { row: number; col: number } | null): void {
+        this.secondCard = position;
+        this.checkRep();
+    }
+
+    /**
+     * Clear both first and second card positions.
+     */
+    public clearCards(): void {
+        this.firstCard = null;
+        this.secondCard = null;
+        this.checkRep();
+    }
+
+    /**
+     * Check if this is a first card flip (no first card set yet).
+     * @returns true if no first card is set
+     */
+    public isFirstCardFlip(): boolean {
+        return this.firstCard === null;
+    }
+
+    /**
      * Get a string representation for debugging.
      * @returns string describing this player and their statistics
      */
@@ -112,16 +172,26 @@ export class Player {
      */
     private checkRep(): void {
         if (typeof this.id !== 'string' || this.id.length === 0 || /\s/.test(this.id)) {
-        throw new Error(`invalid id: ${this.id}`);
+            throw new Error(`invalid id: ${this.id}`);
         }
         if (typeof this.displayName !== 'string' || this.displayName.length === 0) {
-        throw new Error(`invalid displayName`);
+            throw new Error(`invalid displayName`);
         }
         if (!Number.isInteger(this.flips) || this.flips < 0) {
-        throw new Error(`invalid flips: ${this.flips}`);
+            throw new Error(`invalid flips: ${this.flips}`);
         }
         if (!Number.isInteger(this.matches) || this.matches < 0) {
-        throw new Error(`invalid matches: ${this.matches}`);
+            throw new Error(`invalid matches: ${this.matches}`);
+        }
+        if (this.firstCard !== null) {
+            if (!Number.isInteger(this.firstCard.row) || !Number.isInteger(this.firstCard.col)) {
+                throw new Error(`invalid firstCard position`);
+            }
+        }
+        if (this.secondCard !== null) {
+            if (!Number.isInteger(this.secondCard.row) || !Number.isInteger(this.secondCard.col)) {
+                throw new Error(`invalid secondCard position`);
+            }
         }
     }
 }

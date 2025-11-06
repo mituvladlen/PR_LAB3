@@ -55,7 +55,7 @@ export async function look(board: Board, playerId: string): Promise<string> {
  */
 export async function flip(board: Board, playerId: string, row: number, column: number): Promise<string> {
     board.registerPlayer(playerId);     
-    board.flipUp(playerId, row, column); 
+    await board.flipUp(playerId, row, column); 
     return render(board, playerId);
 }
 

@@ -3,6 +3,22 @@ import fs from 'node:fs';
 import { Player } from './player.js';
 
 /**
+ * Deferred promise utility for storing promises to be resolved later.
+ */
+class Deferred<T> {
+    public readonly promise: Promise<T>;
+    public resolve!: (value: T) => void;
+    public reject!: (reason?: unknown) => void;
+
+    public constructor() {
+        this.promise = new Promise<T>((resolve, reject) => {
+            this.resolve = resolve;
+            this.reject = reject;
+        });
+    }
+}
+
+/**
  * Mutable ADT representing a Memory Scramble game board.
  * 
  * A board is a rows×cols grid where each cell either:
@@ -20,6 +36,9 @@ export class Board {
     private readonly faceUp: boolean[][];
     private readonly controller: (string | null)[][];
     private readonly players: Map<string, Player>;
+    // Track pending control attempts for each cell
+    private readonly waitingForControl: Map<string, Deferred<void>[]>;
+    
     // Rep invariant:
     //   - rows, cols are positive integers (>= 1)
     //   - cards, faceUp, controller are all rowsxcols 2D arrays
@@ -57,20 +76,21 @@ export class Board {
         this.faceUp = [];
         this.controller = [];
         this.players = new Map();
+        this.waitingForControl = new Map();
         
         let k = 0;
         for (let r = 0; r < rows; r++) {
-        const rc: (string | null)[] = [];
-        const ru: boolean[] = [];
-        const rctrl: (string | null)[] = [];
-        for (let c = 0; c < cols; c++) {
-            rc.push(layout[k++] ?? null);
-            ru.push(false);
-            rctrl.push(null);
-        }
-        this.cards.push(rc);
-        this.faceUp.push(ru);
-        this.controller.push(rctrl);
+            const rc: (string | null)[] = [];
+            const ru: boolean[] = [];
+            const rctrl: (string | null)[] = [];
+            for (let c = 0; c < cols; c++) {
+                rc.push(layout[k++] ?? null);
+                ru.push(false);
+                rctrl.push(null);
+            }
+            this.cards.push(rc);
+            this.faceUp.push(ru);
+            this.controller.push(rctrl);
         }
         this.checkRep();
     }
@@ -232,11 +252,12 @@ export class Board {
     }
 
   // =======================
-  // Simple flips (Problem 1)
+  // Card flipping 
   // =======================
 
     /**
-     * Flip a card face-up and assign control to a player.
+     * Flip a card face-up and assign control to a player (asynchronous version).
+     * Implements the game rules for first and second card flips.
      * 
      * @param playerId id of the player flipping the card
      * @param row row index of the card (0-based)
@@ -244,37 +265,262 @@ export class Board {
      * @throws Error if:
      *         - row or col are out of bounds
      *         - playerId is not registered
-     *         - the cell is empty
-     *         - the card is already face-up
+     *         - the cell is empty (1-A or 2-A)
+     *         - second card is face up and controlled (2-B)
      */
-    public flipUp(playerId: string, row: number, col: number): void {
-        this.requireInBounds(row, col);
-        if (!this.players.has(playerId)) throw new Error(`unknown player: ${playerId}`);
+
+    public async flipUp(playerId: string, row: number, col: number): Promise<void> {
+    this.requireInBounds(row, col);
+    if (!this.players.has(playerId)) throw new Error(`unknown player: ${playerId}`);
+    
+    const player = this.players.get(playerId);
+    if (!player) throw new Error(`player not found: ${playerId}`);
+
+    const cardsRow = this.cards[row];
+    const faceUpRow = this.faceUp[row];
+    const controllerRow = this.controller[row];
+    
+    if (!cardsRow || !faceUpRow || !controllerRow) throw new Error('invalid row');
+    if (player.getSecondCard() !== null) {
+        await this.cleanupPreviousPlay(player); // does 3-A or 3-B as appropriate
+    }
+    // Check if this is a first card or second card flip
+    const isFirstCard = player.isFirstCardFlip();
+    
+    if (isFirstCard) {
+        // First card flip - clean up previous play FIRST (3-A/3-B)
+        await this.cleanupPreviousPlay(player);
         
+        const pic = cardsRow[col];
+        
+        // 1-A: No card there (empty space)
+        if (pic === null) {
+            throw new Error('empty space');
+        }
+        
+        const isFaceUp = faceUpRow[col] ?? false;
+        const ctrl = controllerRow[col];
+        
+        // 1-B: Card is face down - flip it up and take control
+        if (!isFaceUp) {
+            faceUpRow[col] = true;
+            controllerRow[col] = playerId;
+            player.setFirstCard({ row, col });
+            player.recordFlip();
+            this.checkRep();
+            return;
+        }
+        
+        // 1-C: Card is face up but not controlled - take control
+        if (ctrl === null) {
+            controllerRow[col] = playerId;
+            player.setFirstCard({ row, col });
+            player.recordFlip();
+            this.checkRep();
+            return;
+        }
+        
+        // 1-D: Card is face up and controlled by another player - wait
+        if (ctrl !== playerId) {
+            const key = `${row},${col}`;
+            const deferred = new Deferred<void>();
+            
+            if (!this.waitingForControl.has(key)) {
+                this.waitingForControl.set(key, []);
+            }
+            this.waitingForControl.get(key)?.push(deferred);
+            
+            await deferred.promise;
+            
+            // After waiting, try again (recursive call)
+            return this.flipUp(playerId, row, col);
+        }
+        
+        // If we get here, ctrl === playerId (player is re-selecting their own card)
+        player.setFirstCard({ row, col });
+        player.recordFlip();
+        this.checkRep();
+        
+    } else {
+        // Second card flip
+        const firstCard = player.getFirstCard();
+        if (!firstCard) {
+            throw new Error('internal error: no first card');
+        }
+        
+        // Check if trying to flip the same card twice
+        if (firstCard.row === row && firstCard.col === col) {
+            throw new Error('cannot select the same card twice');
+        }
+        
+        const pic = cardsRow[col];
+        
+        // 2-A: No card there (empty space)
+        if (pic === null) {
+            // Relinquish control of first card
+            const firstCtrlRow = this.controller[firstCard.row];
+            if (firstCtrlRow && firstCtrlRow[firstCard.col] === playerId) {
+                firstCtrlRow[firstCard.col] = null;
+                this.notifyWaiters(firstCard.row, firstCard.col);
+            }
+            player.clearCards();
+            throw new Error('empty space');
+        }
+        
+        const isFaceUp = faceUpRow[col] ?? false;
+        const ctrl = controllerRow[col];
+        
+        // 2-B: Card is face up and controlled - fail (avoid deadlock)
+        if (isFaceUp && ctrl !== null) {
+            // Relinquish control of first card
+            const firstCtrlRow = this.controller[firstCard.row];
+            if (firstCtrlRow && firstCtrlRow[firstCard.col] === playerId) {
+                firstCtrlRow[firstCard.col] = null;
+                this.notifyWaiters(firstCard.row, firstCard.col);
+            }
+            player.clearCards();
+            throw new Error('card is controlled by another player');
+        }
+        
+        // 2-C: Flip card face up if it's face down
+        if (!isFaceUp) {
+            faceUpRow[col] = true;
+        }
+
+        // Take control of the second card
+        controllerRow[col] = playerId;
+        player.setSecondCard({ row, col });
+        player.recordFlip();
+
+        // Check for match
+        const firstPic = this.pictureAt(firstCard.row, firstCard.col);
+        const secondPic = pic;
+
+        if (firstPic === secondPic && firstPic !== null) {
+            // 2-D: Match! Keep control of both cards
+            player.recordMatch();
+            // Cards stay controlled and face up until next first card flip (3-A)
+        } else {
+            // 2-E: No match - relinquish control of both cards
+            const firstCtrlRow = this.controller[firstCard.row];
+            if (firstCtrlRow && firstCtrlRow[firstCard.col] === playerId) {
+                firstCtrlRow[firstCard.col] = null;
+                this.notifyWaiters(firstCard.row, firstCard.col);
+            }
+            controllerRow[col] = null;
+            this.notifyWaiters(row, col);
+            // Cards remain face up until next first card flip (3-B)
+        }
+        
+        this.checkRep();
+    }
+}
+
+    private async cleanupPreviousPlay(player: Player): Promise<void> {
+    const firstCard = player.getFirstCard();
+    const secondCard = player.getSecondCard();
+    
+    if (firstCard && secondCard) {
+        // Had two cards from previous play
+        const firstPic = this.pictureAt(firstCard.row, firstCard.col);
+        const secondPic = this.pictureAt(secondCard.row, secondCard.col);
+        
+        if (firstPic === secondPic && firstPic !== null) {
+            // 3-A: Matching pair - remove from board
+            const firstCardsRow = this.cards[firstCard.row];
+            const secondCardsRow = this.cards[secondCard.row];
+            const firstCtrlRow = this.controller[firstCard.row];
+            const secondCtrlRow = this.controller[secondCard.row];
+            const firstFaceUpRow = this.faceUp[firstCard.row];
+            const secondFaceUpRow = this.faceUp[secondCard.row];
+            
+            if (firstCardsRow && firstCtrlRow && firstFaceUpRow) {
+                // Only remove if player still controls the card
+                if (firstCtrlRow[firstCard.col] === player.getId()) {
+                    firstCardsRow[firstCard.col] = null;
+                    firstFaceUpRow[firstCard.col] = false;
+                    firstCtrlRow[firstCard.col] = null;
+                    this.notifyWaiters(firstCard.row, firstCard.col);
+                }
+            }
+            
+            if (secondCardsRow && secondCtrlRow && secondFaceUpRow) {
+                // Only remove if player still controls the card
+                if (secondCtrlRow[secondCard.col] === player.getId()) {
+                    secondCardsRow[secondCard.col] = null;
+                    secondFaceUpRow[secondCard.col] = false;
+                    secondCtrlRow[secondCard.col] = null;
+                    this.notifyWaiters(secondCard.row, secondCard.col);
+                }
+            }
+        } else {
+            // 3-B: Non-matching cards - flip down if conditions met
+            this.flipDownIfUncontrolled(firstCard.row, firstCard.col);
+            this.flipDownIfUncontrolled(secondCard.row, secondCard.col);
+        }
+    } else if (firstCard) {
+        // Had only first card from previous play (no second card was flipped)
+        // This happens if second card flip failed (2-A or 2-B)
+        this.flipDownIfUncontrolled(firstCard.row, firstCard.col);
+    }
+    
+    // Clear player's card state
+    player.clearCards();
+}
+/**
+ * Flip down a card if it's face up, not controlled, and still on the board.
+ * This implements the condition in rule 3-B.
+ */
+    private flipDownIfUncontrolled(row: number, col: number): void {
         const cardsRow = this.cards[row];
         const faceUpRow = this.faceUp[row];
         const controllerRow = this.controller[row];
         
-        if (!cardsRow || !faceUpRow || !controllerRow) throw new Error('invalid row');
+        if (!cardsRow || !faceUpRow || !controllerRow) return;
         
         const pic = cardsRow[col];
-        if (pic === null) throw new Error('empty space');
         const isFaceUp = faceUpRow[col] ?? false;
-        if (isFaceUp) throw new Error('already face up');
-
-        faceUpRow[col] = true;
-        controllerRow[col] = playerId;
-        const player = this.players.get(playerId);
-        if (player) {
-            player.recordFlip();
+        const ctrl = controllerRow[col];
+        
+        // Only flip down if: card is still on board, face up, and not controlled
+        if (pic !== null && isFaceUp && ctrl === null) {
+            faceUpRow[col] = false;
         }
+    }
+    private flipDownIfPossible(row: number, col: number): void {
+        const cardsRow = this.cards[row];
+        const faceUpRow = this.faceUp[row];
+        const controllerRow = this.controller[row];
+        
+        if (!cardsRow || !faceUpRow || !controllerRow) return;
+        
+        const pic = cardsRow[col];
+        const isFaceUp = faceUpRow[col] ?? false;
+        const ctrl = controllerRow[col];
+        
+        if (pic !== null && isFaceUp && ctrl === null) {
+            faceUpRow[col] = false;
+        }
+    }
 
-        this.checkRep();
+    /**
+     * Notify waiting players that a card is now available for control.
+     */
+    private notifyWaiters(row: number, col: number): void {
+        const key = `${row},${col}`;
+        const waiters = this.waitingForControl.get(key);
+        
+        if (waiters && waiters.length > 0) {
+            while (waiters.length > 0) {
+                waiters.shift()!.resolve(); // they will retry, see 1-A (empty)
+            }
+        }
+        this.waitingForControl.delete(key);
     }
 
 
     /**
-     * Flip a card face-down and remove its controller.
+     * Flip a card face-down and remove its controller (synchronous version for backwards compatibility).
      * 
      * @param row row index of the card (0-based)
      * @param col column index of the card (0-based)
