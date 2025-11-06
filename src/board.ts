@@ -4,12 +4,19 @@ import { Player } from './player.js';
 
 /**
  * Deferred promise utility for storing promises to be resolved later.
+ * Allows external resolution of a promise after creation.
+ * 
+ * @template T the type of value the promise will resolve to
  */
 class Deferred<T> {
     public readonly promise: Promise<T>;
     public resolve!: (value: T) => void;
     public reject!: (reason?: unknown) => void;
 
+    /**
+     * Create a new deferred promise.
+     * The promise can be resolved or rejected later using the resolve/reject methods.
+     */
     public constructor() {
         this.promise = new Promise<T>((resolve, reject) => {
             this.resolve = resolve;
@@ -265,8 +272,9 @@ export class Board {
      * @throws Error if:
      *         - row or col are out of bounds
      *         - playerId is not registered
-     *         - the cell is empty (1-A or 2-A)
-     *         - second card is face up and controlled (2-B)
+     *         - the cell is empty (rules 1-A or 2-A)
+     *         - second card is face up and controlled (rule 2-B)
+     *         - trying to flip the same card twice
      */
 
     public async flipUp(playerId: string, row: number, col: number): Promise<void> {
@@ -307,6 +315,7 @@ export class Board {
             controllerRow[col] = playerId;
             player.setFirstCard({ row, col });
             player.recordFlip();
+            console.log(`[BOARD] ${playerId} CONTROLS FIRST at (${row},${col}) via 1-B (flipped face up)`);
             this.checkRep();
             return;
         }
@@ -316,12 +325,15 @@ export class Board {
             controllerRow[col] = playerId;
             player.setFirstCard({ row, col });
             player.recordFlip();
+            console.log(`[BOARD] ${playerId} CONTROLS FIRST at (${row},${col}) via 1-C (already face up, unowned)`);
             this.checkRep();
             return;
         }
         
         // 1-D: Card is face up and controlled by another player - wait
         if (ctrl !== playerId) {
+            console.log(`[BOARD] ${playerId} is WAITING to flip (${row},${col}) — currently controlled by ${ctrl}`);
+
             const key = `${row},${col}`;
             const deferred = new Deferred<void>();
             
@@ -331,7 +343,7 @@ export class Board {
             this.waitingForControl.get(key)?.push(deferred);
             
             await deferred.promise;
-            
+            console.log(`[BOARD] ${playerId} resumes after WAIT on (${row},${col})`);
             // After waiting, try again (recursive call)
             return this.flipUp(playerId, row, col);
         }
@@ -350,6 +362,13 @@ export class Board {
         
         // Check if trying to flip the same card twice
         if (firstCard.row === row && firstCard.col === col) {
+            const firstCtrlRow = this.controller[firstCard.row];
+            if (firstCtrlRow && firstCtrlRow[firstCard.col] === playerId) {
+                firstCtrlRow[firstCard.col] = null;
+                console.log(`[BOARD] ${playerId} RELINQUISHES FIRST/SECOND at (${firstCard.row},${firstCard.col}) due to selecting same card twice (2-B)`);
+                this.notifyWaiters(firstCard.row, firstCard.col);
+            }
+            player.clearCards();
             throw new Error('cannot select the same card twice');
         }
         
@@ -363,6 +382,7 @@ export class Board {
                 firstCtrlRow[firstCard.col] = null;
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
+            console.log(`[BOARD] ${playerId} RELINQUISHES FIRST at (${firstCard.row},${firstCard.col}) due to 2-A (second was empty at (${row},${col}))`);
             player.clearCards();
             throw new Error('empty space');
         }
@@ -378,6 +398,7 @@ export class Board {
                 firstCtrlRow[firstCard.col] = null;
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
+            console.log(`[BOARD] ${playerId} RELINQUISHES FIRST at (${firstCard.row},${firstCard.col}) due to 2-B (second at (${row},${col}) controlled by ${ctrl})`);
             player.clearCards();
             throw new Error('card is controlled by another player');
         }
@@ -385,6 +406,7 @@ export class Board {
         // 2-C: Flip card face up if it's face down
         if (!isFaceUp) {
             faceUpRow[col] = true;
+            console.log(`[BOARD] ${playerId} FLIPS SECOND at (${row},${col}) via 2-C`);
         }
 
         // Take control of the second card
@@ -399,6 +421,7 @@ export class Board {
         if (firstPic === secondPic && firstPic !== null) {
             // 2-D: Match! Keep control of both cards
             player.recordMatch();
+            console.log(`[BOARD] ${playerId} MATCHES (${firstCard.row},${firstCard.col}) <-> (${row},${col}) via 2-D (keeps control until next first)`);
             // Cards stay controlled and face up until next first card flip (3-A)
         } else {
             // 2-E: No match - relinquish control of both cards
@@ -407,6 +430,7 @@ export class Board {
                 firstCtrlRow[firstCard.col] = null;
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
+            console.log(`[BOARD] ${playerId} NO MATCH via 2-E; relinquishes both (${firstCard.row},${firstCard.col}) & (${row},${col}) (stay face up until 3-B)`);
             controllerRow[col] = null;
             this.notifyWaiters(row, col);
             // Cards remain face up until next first card flip (3-B)
@@ -416,6 +440,11 @@ export class Board {
     }
 }
 
+    /**
+     * Clean up a player's previous play before starting a new first card flip.
+     * @param player the player whose previous play should be cleaned up
+     * @returns promise that resolves when cleanup is complete
+     */
     private async cleanupPreviousPlay(player: Player): Promise<void> {
     const firstCard = player.getFirstCard();
     const secondCard = player.getSecondCard();
@@ -453,6 +482,8 @@ export class Board {
                     this.notifyWaiters(secondCard.row, secondCard.col);
                 }
             }
+            console.log(`[BOARD] ${player.getId()} REMOVES MATCHED PAIR via 3-A at (${firstCard.row},${firstCard.col}) and (${secondCard.row},${secondCard.col})`);
+
         } else {
             // 3-B: Non-matching cards - flip down if conditions met
             this.flipDownIfUncontrolled(firstCard.row, firstCard.col);
@@ -467,10 +498,13 @@ export class Board {
     // Clear player's card state
     player.clearCards();
 }
-/**
- * Flip down a card if it's face up, not controlled, and still on the board.
- * This implements the condition in rule 3-B.
- */
+    /**
+     * Flip down a card if it's face up, not controlled, and still on the board.
+     * This implements the condition in rule 3-B for cleaning up non-matching cards.
+     * 
+     * @param row row index of the card (0-based)
+     * @param col column index of the card (0-based)
+     */
     private flipDownIfUncontrolled(row: number, col: number): void {
         const cardsRow = this.cards[row];
         const faceUpRow = this.faceUp[row];
@@ -485,26 +519,18 @@ export class Board {
         // Only flip down if: card is still on board, face up, and not controlled
         if (pic !== null && isFaceUp && ctrl === null) {
             faceUpRow[col] = false;
-        }
-    }
-    private flipDownIfPossible(row: number, col: number): void {
-        const cardsRow = this.cards[row];
-        const faceUpRow = this.faceUp[row];
-        const controllerRow = this.controller[row];
-        
-        if (!cardsRow || !faceUpRow || !controllerRow) return;
-        
-        const pic = cardsRow[col];
-        const isFaceUp = faceUpRow[col] ?? false;
-        const ctrl = controllerRow[col];
-        
-        if (pic !== null && isFaceUp && ctrl === null) {
-            faceUpRow[col] = false;
+            console.log(`[BOARD] Card at (${row},${col}) FLIPPED DOWN via 3-B (uncontrolled)`);
         }
     }
 
+
     /**
      * Notify waiting players that a card is now available for control.
+     * Resolves all deferred promises for players waiting on the specified card.
+     * Called when a player relinquishes control or when a card is removed.
+     * 
+     * @param row row index of the card (0-based)
+     * @param col column index of the card (0-based)
      */
     private notifyWaiters(row: number, col: number): void {
         const key = `${row},${col}`;

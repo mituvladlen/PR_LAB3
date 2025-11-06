@@ -10,106 +10,161 @@ import { Board } from './board.js';
 async function simulationMain(): Promise<void> {
     const filename = 'boards/ab.txt';
     const board: Board = await Board.parseFromFile(filename);
-    const size = 5;
-    const players = 1;
-    const tries = 10;
-    const maxDelayMilliseconds = 100;
 
-    assert(size > 0 && Number.isInteger(size));
+    const players = 3;                 // simulate multi-player
+    const triesPerPlayer = 20;         // each player will attempt this many flips
+    const maxDelayMs = 5;              // tiny delays to force interleavings
 
-    // start up one or more players as concurrent asynchronous function calls
-    const playerPromises: Array<Promise<void>> = [];
-    for (let ii = 0; ii < players; ++ii) {
-        playerPromises.push(player(ii));
+    // Utility to yield control briefly 
+    const timeout = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
+
+    // register players
+    const ids: string[] = [];
+    for (let i = 0; i < players; i++) {
+        const id = `P${i + 1}`;
+        ids.push(id);
+        board.registerPlayer(id, `Player ${i + 1}`);
     }
-    // wait for all the players to finish (unless one throws an exception)
-    await Promise.all(playerPromises);
 
-    /**
-     * Simulate one automated player attempting to find card matches.
-     * 
-     * @param playerNumber numeric identifier for this simulated player
-     */
-    async function player(playerNumber: number): Promise<void> {
-        const playerId = `p${playerNumber}`;
-        board.registerPlayer(playerId, `Player ${playerNumber}`);
+    const rows = board.numRows();
+    const cols = board.numCols();
+    const rand = (n: number) => Math.floor(Math.random() * n);
+    const randCell = () => ({ r: rand(rows), c: rand(cols) });
+    const delay = () => timeout(rand(maxDelayMs + 1));
 
-        for (let jj = 0; jj < tries; ++jj) {
-            try {
-                await timeout(Math.random() * maxDelayMilliseconds);
-                const r1 = randomInt(size);
-                const c1 = randomInt(size);
+    const colors = {
+        reset: '\x1b[0m',
+        bright: '\x1b[1m',
+        dim: '\x1b[2m',
+        cyan: '\x1b[36m',
+        green: '\x1b[32m',
+        yellow: '\x1b[33m',
+        red: '\x1b[31m',
+        blue: '\x1b[34m',
+        magenta: '\x1b[35m'
+    };
 
-                // guard: must be on-board, non-empty, face-down
-                if (r1 >= board.numRows() || c1 >= board.numCols()) {
-                    // out of bounds relative to actual board; skip this attempt
-                    continue;
+    const playerColors: Record<string, string> = {
+        'P1': colors.cyan,
+        'P2': colors.green,
+        'P3': colors.yellow
+    };
+
+    const log = (pid: string, message: string, details?: string) => {
+        const color = playerColors[pid] || colors.reset;
+        const timestamp = new Date().toISOString().slice(11, 23);
+        console.log(`${colors.dim}[${timestamp}]${colors.reset} ${color}${pid}${colors.reset} ${message}${details ? ` ${colors.dim}${details}${colors.reset}` : ''}`);
+    };
+
+    const showBoard = () => {
+        console.log('\n' + colors.bright + '━'.repeat(60) + colors.reset);
+        console.log(colors.bright + 'BOARD STATE:' + colors.reset);
+        console.log(colors.bright + '━'.repeat(60) + colors.reset);
+        
+        for (let r = 0; r < rows; r++) {
+            let rowStr = '';
+            for (let c = 0; c < cols; c++) {
+                const pic = board.pictureAt(r, c);
+                const isFaceUp = board.isFaceUp(r, c);
+                const ctrl = board.controllerAt(r, c);
+                
+                let cellDisplay = '';
+                if (pic === null) {
+                    cellDisplay = colors.dim + '[empty]' + colors.reset;
+                } else if (!isFaceUp) {
+                    cellDisplay = colors.blue + '[down]' + colors.reset;
+                } else if (ctrl) {
+                    const ctrlColor = playerColors[ctrl] || colors.reset;
+                    cellDisplay = ctrlColor + `[${pic}:${ctrl}]` + colors.reset;
+                } else {
+                    cellDisplay = colors.magenta + `[${pic}]` + colors.reset;
                 }
-                if (board.pictureAt(r1, c1) === null || board.isFaceUp(r1, c1)) {
-                    // empty or already face-up; skip this attempt
-                    continue;
-                }
-
-                board.flipUp(playerId, r1, c1);
-                console.log(`player ${playerId}: flipped first at (${r1},${c1}) = ${board.pictureAt(r1, c1)}`);
-
-                await timeout(Math.random() * maxDelayMilliseconds);
-
-                let flippedSecond = false;
-                const r2 = randomInt(size);
-                const c2 = randomInt(size);
-
-                if (r2 < board.numRows() && c2 < board.numCols()
-                    && board.pictureAt(r2, c2) !== null
-                    && !board.isFaceUp(r2, c2)) {
-
-                    board.flipUp(playerId, r2, c2);
-                    flippedSecond = true;
-                    console.log(`player ${playerId}: flipped second at (${r2},${c2}) = ${board.pictureAt(r2, c2)}`);
-
-                    // log whether they match, then flip both back down.
-                    const p1 = board.pictureAt(r1, c1);
-                    const p2 = board.pictureAt(r2, c2);
-                    if (p1 !== null && p2 !== null) {
-                        console.log(`player ${playerId}: ${p1 === p2 ? 'MATCH' : 'no match'}`);
-                    }
-                }
-
-                // flip back down to keep exploring in P1
-                if (flippedSecond && board.isFaceUp(r2, c2)) {
-                    board.flipDown(r2, c2);
-                }
-                if (board.isFaceUp(r1, c1)) {
-                    board.flipDown(r1, c1);
-                }
-
-            } catch (err) {
-                console.error('attempt to flip a card failed:', err);
+                
+                rowStr += cellDisplay.padEnd(20);
             }
+            console.log(`  ${rowStr}`);
+        }
+        console.log(colors.bright + '━'.repeat(60) + colors.reset + '\n');
+    };
+
+    async function doRandomFirstFlip(pid: string) {
+        const { r, c } = randCell();
+        const pic = board.pictureAt(r, c);
+        const picStr = pic ? `'${pic}'` : 'empty';
+        
+        try {
+            log(pid, ` Flipping FIRST card at (${r},${c})`, `[${picStr}]`);
+            await board.flipUp(pid, r, c);
+        } catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            log(pid, ` FIRST card` + colors.red + ` failed` + colors.reset + ` at (${r},${c})`, `[${error}]`);
         }
     }
+
+    async function doRandomSecondFlip(pid: string) {
+        const { r, c } = randCell();
+        const pic = board.pictureAt(r, c);
+        const picStr = pic ? `'${pic}'` : 'empty';
+        
+        try {
+            log(pid, ` Flipping SECOND card at (${r},${c})`, `[${picStr}]`);
+            await board.flipUp(pid, r, c);
+        
+        } catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            log(pid, ` SECOND card` + colors.red + ` failed` + colors.reset +` at (${r},${c})`, `[${error}]`);
+        }
+    }
+
+    // Each player runs in its own async task
+    async function playerTask(pid: string) {
+        log(pid, ` Started playing`, `(${triesPerPlayer} rounds)`);
+        
+        for (let t = 0; t < triesPerPlayer; t++) {
+            await delay();
+            await doRandomFirstFlip(pid);
+            
+            await delay();
+            await doRandomSecondFlip(pid);
+            
+            if (t % 5 === 4) { // Show board every 5 rounds
+                showBoard();
+            }
+            await delay();
+        }
+        
+        // Ensure 3-A/3-B cleanup runs even if the last move ended in a match
+        await doRandomFirstFlip(pid);
+        log(pid, ` Finished playing`, '');
+    }
+
+    console.log('\n' + colors.bright + colors.cyan + '╔═══════════════════════════════════════════════════════╗' + colors.reset);
+    console.log(colors.bright + colors.cyan + '║         MEMORY SCRAMBLE SIMULATION START              ║' + colors.reset);
+    console.log(colors.bright + colors.cyan + '╚═══════════════════════════════════════════════════════╝' + colors.reset + '\n');
+    
+    console.log(`${colors.bright}Configuration:${colors.reset}`);
+    console.log(`  Players: ${players}`);
+    console.log(`  Rounds per player: ${triesPerPlayer}`);
+    console.log(`  Board: ${filename} (${rows}×${cols})`);
+    console.log('');
+    
+    showBoard();
+
+    // Run everyone concurrently
+    await Promise.all(ids.map(playerTask));
+
+    // Final board for inspection
+    console.log('\n' + colors.bright + colors.cyan + '╔═══════════════════════════════════════════════════════╗' + colors.reset);
+    console.log(colors.bright + colors.cyan + '║         SIMULATION COMPLETE - FINAL BOARD             ║' + colors.reset);
+    console.log(colors.bright + colors.cyan + '╚═══════════════════════════════════════════════════════╝' + colors.reset);
+    showBoard();
+    
+    // Show player statistics
+    console.log(colors.bright + 'Player Statistics:' + colors.reset);
+    for (const id of ids) {
+        console.log(`  ${playerColors[id]}${id}${colors.reset}: Game completed`);
+    }
 }
 
-/**
- * Generate a random integer from 0 (inclusive) to max (exclusive).
- * 
- * @param max the upper bound (exclusive), must be positive
- * @returns a random integer in the range [0, max)
- */
-function randomInt(max: number): number {
-    return Math.floor(Math.random() * max);
-}
-
-/**
- * Asynchronously pause execution for the specified duration.
- * 
- * @param milliseconds how long to wait in milliseconds
- * @returns a promise that fulfills after the wait period
- */
-async function timeout(milliseconds: number): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, milliseconds);
-    return promise;
-}
 
 void simulationMain();
