@@ -1,11 +1,12 @@
 {
-  "name": "ps4",
+  "name": "lab3_pr",
   "private": true,
   "type": "module",
   "engines": {
     "node": "^22.12.x"
   },
   "scripts": {
+    "doc": "typedoc",
     "compile": "tsc",
     "start": "tsc && node --require source-map-support/register dist/src/server.js",
     "simulation": "tsc && node --require source-map-support/register dist/src/simulation.js",

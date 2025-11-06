@@ -327,7 +327,6 @@ export class Board {
     public static async parseFromFile(filename: string): Promise<Board> {
     try {
         const text = (await fs.promises.readFile(filename)).toString();
-        // Fix: use replace with regex instead of replaceAll
         const norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         let lines = norm.split('\n');
         

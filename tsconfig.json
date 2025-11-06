@@ -1,7 +1,7 @@
 {
   "include": [
-    "./src/*.ts",
-    "./test/*.ts",
+    "src/**/*.ts",
+    "./test/*.ts"
   ],
   
   "compilerOptions": {
@@ -23,7 +23,8 @@
   "typedocOptions": {
     "entryPoints": [
       "src/board.ts",
-      "src/commands.ts"
+      "src/commands.ts",
+      "src/player.ts"
     ],
     "out": "doc",
     "disableSources": true,

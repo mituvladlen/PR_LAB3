@@ -32,13 +32,13 @@ export class Player {
     /**
      * Create a new player.
      * 
-     * @param id unique player identifier (nonempty string, no whitespace)
-     * @param displayName human-readable name for the player (nonempty string)
-     * @throws Error if id is empty, contains whitespace, or displayName is empty
+     * @param playerId unique player identifier (nonempty string, no whitespace)
+     * @param playerDisplayName human-readable name for the player (nonempty string)
+     * @throws Error if playerId is empty, contains whitespace, or playerDisplayName is empty
      */
-    public constructor(id: string, displayName: string) {
-        this.id = id;
-        this.displayName = displayName;
+    public constructor(playerId: string, playerDisplayName: string) {
+        this.id = playerId;
+        this.displayName = playerDisplayName;
         this.flips = 0;
         this.matches = 0;
         this.checkRep();
