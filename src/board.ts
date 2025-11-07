@@ -45,6 +45,8 @@ export class Board {
     private readonly players: Map<string, Player>;
     // Track pending control attempts for each cell
     private readonly waitingForControl: Map<string, Deferred<void>[]>;
+    private readonly lingering: Map<string, Array<{ row: number; col: number }>>;
+
     
     // Rep invariant:
     //   - rows, cols are positive integers (>= 1)
@@ -84,6 +86,7 @@ export class Board {
         this.controller = [];
         this.players = new Map();
         this.waitingForControl = new Map();
+        this.lingering = new Map();
         
         let k = 0;
         for (let r = 0; r < rows; r++) {
@@ -140,9 +143,6 @@ export class Board {
     }     
 }
 
-  // ============
-  // Observers
-  // ============
 
     /**
      * Get the number of rows on this board.
@@ -188,6 +188,22 @@ export class Board {
     }
 
     /**
+     * Record a card position that should be cleaned up later for a specific player.
+     * This method tracks cards that are face-up but uncontrolled after a failed second card flip
+     * (rules 2-A or 2-B), so they can be flipped down during the next first card flip (rule 3-B).
+     * 
+     * @param playerId the id of the player whose lingering card should be remembered
+     * @param row the row index of the lingering card (0-based)
+     * @param col the column index of the lingering card (0-based)
+     */
+    private rememberLingering(playerId: string, row: number, col: number): void {
+        const list = this.lingering.get(playerId) ?? [];
+        list.push({ row, col });
+        this.lingering.set(playerId, list);
+    }
+
+
+    /**
      * Get the player controlling a card.
      * 
      * @param row row index (0-based)
@@ -228,9 +244,6 @@ export class Board {
         return `Board(${this.rows}x${this.cols})`;
     }
 
-  // ======================
-  // Player registry (P1)
-  // ======================
 
     /**
      * Register a player or retrieve an existing player.
@@ -263,6 +276,31 @@ export class Board {
   // =======================
 
     /**
+     * Render the current board state as a textual representation from a player's perspective.
+     * 
+     * @param playerId identifier of the player viewing the board
+     * @returns string representation of the board state, with newline-separated rows
+     */
+    public render(playerId: string): string {
+        const rows = this.rows, cols = this.cols;
+        const lines: string[] = [`${rows}x${cols}`];
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const pic = this.pictureAt(r, c);
+                if (pic === null) {
+                lines.push('none');
+                } else if (!this.isFaceUp(r, c)) {
+                    lines.push('down');
+                } else {
+                    const ctrl = this.controllerAt(r, c); // playerId or null
+                    lines.push(`${ctrl === playerId ? 'my' : 'up'} ${pic}`);
+                }
+            }
+        }
+        return lines.join('\n') + '\n';
+    }
+
+    /**
      * Flip a card face-up and assign control to a player (asynchronous version).
      * Implements the game rules for first and second card flips.
      * 
@@ -280,35 +318,27 @@ export class Board {
     public async flipUp(playerId: string, row: number, col: number): Promise<void> {
     this.requireInBounds(row, col);
     if (!this.players.has(playerId)) throw new Error(`unknown player: ${playerId}`);
-    
     const player = this.players.get(playerId);
     if (!player) throw new Error(`player not found: ${playerId}`);
-
     const cardsRow = this.cards[row];
     const faceUpRow = this.faceUp[row];
     const controllerRow = this.controller[row];
-    
     if (!cardsRow || !faceUpRow || !controllerRow) throw new Error('invalid row');
     if (player.getSecondCard() !== null) {
         await this.cleanupPreviousPlay(player); // does 3-A or 3-B as appropriate
     }
     // Check if this is a first card or second card flip
     const isFirstCard = player.isFirstCardFlip();
-    
     if (isFirstCard) {
         // First card flip - clean up previous play FIRST (3-A/3-B)
         await this.cleanupPreviousPlay(player);
-        
         const pic = cardsRow[col];
-        
         // 1-A: No card there (empty space)
         if (pic === null) {
             throw new Error('empty space');
         }
-        
         const isFaceUp = faceUpRow[col] ?? false;
         const ctrl = controllerRow[col];
-        
         // 1-B: Card is face down - flip it up and take control
         if (!isFaceUp) {
             faceUpRow[col] = true;
@@ -319,7 +349,6 @@ export class Board {
             this.checkRep();
             return;
         }
-        
         // 1-C: Card is face up but not controlled - take control
         if (ctrl === null) {
             controllerRow[col] = playerId;
@@ -329,37 +358,30 @@ export class Board {
             this.checkRep();
             return;
         }
-        
         // 1-D: Card is face up and controlled by another player - wait
         if (ctrl !== playerId) {
             console.log(`[BOARD] ${playerId} is WAITING to flip (${row},${col}) — currently controlled by ${ctrl}`);
-
             const key = `${row},${col}`;
             const deferred = new Deferred<void>();
-            
             if (!this.waitingForControl.has(key)) {
                 this.waitingForControl.set(key, []);
             }
             this.waitingForControl.get(key)?.push(deferred);
-            
             await deferred.promise;
             console.log(`[BOARD] ${playerId} resumes after WAIT on (${row},${col})`);
             // After waiting, try again (recursive call)
             return this.flipUp(playerId, row, col);
         }
-        
         // If we get here, ctrl === playerId (player is re-selecting their own card)
         player.setFirstCard({ row, col });
         player.recordFlip();
         this.checkRep();
-        
     } else {
         // Second card flip
         const firstCard = player.getFirstCard();
         if (!firstCard) {
             throw new Error('internal error: no first card');
         }
-        
         // Check if trying to flip the same card twice
         if (firstCard.row === row && firstCard.col === col) {
             const firstCtrlRow = this.controller[firstCard.row];
@@ -368,12 +390,11 @@ export class Board {
                 console.log(`[BOARD] ${playerId} RELINQUISHES FIRST/SECOND at (${firstCard.row},${firstCard.col}) due to selecting same card twice (2-B)`);
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
+            this.rememberLingering(playerId, firstCard.row, firstCard.col);
             player.clearCards();
             throw new Error('cannot select the same card twice');
         }
-        
         const pic = cardsRow[col];
-        
         // 2-A: No card there (empty space)
         if (pic === null) {
             // Relinquish control of first card
@@ -383,13 +404,12 @@ export class Board {
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
             console.log(`[BOARD] ${playerId} RELINQUISHES FIRST at (${firstCard.row},${firstCard.col}) due to 2-A (second was empty at (${row},${col}))`);
+            this.rememberLingering(playerId, firstCard.row, firstCard.col);
             player.clearCards();
             throw new Error('empty space');
         }
-        
         const isFaceUp = faceUpRow[col] ?? false;
         const ctrl = controllerRow[col];
-        
         // 2-B: Card is face up and controlled - fail (avoid deadlock)
         if (isFaceUp && ctrl !== null) {
             // Relinquish control of first card
@@ -399,25 +419,22 @@ export class Board {
                 this.notifyWaiters(firstCard.row, firstCard.col);
             }
             console.log(`[BOARD] ${playerId} RELINQUISHES FIRST at (${firstCard.row},${firstCard.col}) due to 2-B (second at (${row},${col}) controlled by ${ctrl})`);
+            this.rememberLingering(playerId, firstCard.row, firstCard.col);
             player.clearCards();
             throw new Error('card is controlled by another player');
         }
-        
         // 2-C: Flip card face up if it's face down
         if (!isFaceUp) {
             faceUpRow[col] = true;
             console.log(`[BOARD] ${playerId} FLIPS SECOND at (${row},${col}) via 2-C`);
         }
-
         // Take control of the second card
         controllerRow[col] = playerId;
         player.setSecondCard({ row, col });
         player.recordFlip();
-
         // Check for match
         const firstPic = this.pictureAt(firstCard.row, firstCard.col);
         const secondPic = pic;
-
         if (firstPic === secondPic && firstPic !== null) {
             // 2-D: Match! Keep control of both cards
             player.recordMatch();
@@ -435,7 +452,6 @@ export class Board {
             this.notifyWaiters(row, col);
             // Cards remain face up until next first card flip (3-B)
         }
-        
         this.checkRep();
     }
 }
@@ -448,6 +464,15 @@ export class Board {
     private async cleanupPreviousPlay(player: Player): Promise<void> {
     const firstCard = player.getFirstCard();
     const secondCard = player.getSecondCard();
+    const pid = player.getId();
+    const linger = this.lingering.get(pid);
+    if (linger && linger.length) {
+        for (const { row, col } of linger) {
+        // Only flip down if the card is still on board, is face up, and uncontrolled (3-B)
+        this.flipDownIfUncontrolled(row, col);
+        }
+        this.lingering.delete(pid);
+    }
     
     if (firstCard && secondCard) {
         // Had two cards from previous play
@@ -519,7 +544,7 @@ export class Board {
         // Only flip down if: card is still on board, face up, and not controlled
         if (pic !== null && isFaceUp && ctrl === null) {
             faceUpRow[col] = false;
-            console.log(`[BOARD] Card at (${row},${col}) FLIPPED DOWN via 3-B (uncontrolled)`);
+            
         }
     }
 
@@ -538,7 +563,10 @@ export class Board {
         
         if (waiters && waiters.length > 0) {
             while (waiters.length > 0) {
-                waiters.shift()!.resolve(); // they will retry, see 1-A (empty)
+                const waiter = waiters.shift();
+                if (waiter) {
+                    waiter.resolve();
+                }
             }
         }
         this.waitingForControl.delete(key);
