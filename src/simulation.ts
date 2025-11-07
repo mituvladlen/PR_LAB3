@@ -25,7 +25,7 @@ async function simulationMain(): Promise<void> {
     // register players
     const ids: string[] = [];
     for (let i = 0; i < players; i++) {
-        const id = `P${i + 1}`;
+        const id = `playerP${i + 1}`;
         ids.push(id);
         board.registerPlayer(id, `Player ${i + 1}`);
     }
@@ -46,9 +46,9 @@ async function simulationMain(): Promise<void> {
         magenta: '\x1b[35m'
     };
     const playerColors: Record<string, string> = {
-        'p1': colors.cyan,
-        'p2': colors.green,
-        'p3': colors.yellow
+        'playerP1': colors.cyan,
+        'playerP2': colors.green,
+        'playerP3': colors.yellow
     };
     const log = (pid: string, message: string, details?: string): void => {
         const color = playerColors[pid] ?? colors.reset;

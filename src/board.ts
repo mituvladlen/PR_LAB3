@@ -143,6 +143,28 @@ export class Board {
     }     
 }
 
+    /**
+     * Apply a transformation function to all cards on the board.
+     * Empty cells remain unchanged. The transformation is atomic - the board
+     * remains consistent throughout the operation.
+     * 
+     * @param f async transformation function from old picture to new picture
+     * @returns promise that resolves when all transformations are complete
+     */
+    public async map(f: (card: string) => Promise<string>): Promise<void> {
+        for (let r = 0; r < this.rows; r++) {
+            const cardsRow = this.cards[r];
+            if (!cardsRow) continue;
+            for (let c = 0; c < this.cols; c++) {
+                const pic = cardsRow[c];
+                if (pic !== null && pic !== undefined) {
+                    cardsRow[c] = await f(pic);
+                }
+            }
+        }
+        this.checkRep();
+    }
+
 
     /**
      * Get the number of rows on this board.

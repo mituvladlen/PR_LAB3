@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Board } from '../src/board.js';
+import express from 'express';
+import { Server } from 'node:http';
+import { map } from '../src/commands.js';
 
 function tmpfile(contents: string): string {
         const f = path.join(os.tmpdir(), `board-${Math.random().toString(36).slice(2)}.txt`);
@@ -301,5 +304,66 @@ describe('Board – complete rule coverage (1-A…3-B)', function () {
         assert.strictEqual(b.isFaceUp(0, 2), true);
         assert.strictEqual(b.controllerAt(0, 2), 'p');
         });
+    });
+
+});
+
+describe('Board map function', function (){
+    it('preserves face-up/face-down state after transformation', async function () {
+        const b = await Board.parseFromFile(tmpfile('1x2\nA\nB\n'));
+        b.registerPlayer('p');
+
+        await b.flipUp('p', 0, 0); // flip A face-up
+
+        await b.map(async (card: string) => card + '-transformed');
+
+        // Card should still be face-up and controlled
+        assert.equal(b.pictureAt(0, 0), 'A-transformed');
+        assert.equal(b.isFaceUp(0, 0), true);
+        assert.equal(b.controllerAt(0, 0), 'p');
+        
+        // Other card still face-down
+        assert.equal(b.pictureAt(0, 1), 'B-transformed');
+        assert.equal(b.isFaceUp(0, 1), false);
+    });
+});
+
+describe('Server /replace endpoint', function() {
+    this.timeout(5000);
+    let server: Server | undefined;
+    let port: number;
+
+    afterEach(function() {
+        server?.close();
+    });
+
+    it('replaces cards via HTTP request', async function() {
+        const filename = tmpfile('2x2\nunicorn\nrainbow\nunicorn\nrainbow\n');
+        const board = await Board.parseFromFile(filename);
+        port = 3000 + Math.floor(Math.random() * 1000);
+        
+        const app = express();
+        
+        app.get('/replace/:playerId/:fromCard/:toCard', async (request, response) => {
+            const { playerId, fromCard, toCard } = request.params;
+            const boardState = await map(board, playerId, async (card: string) => 
+                card === fromCard ? toCard : card
+            );
+            response.status(200).type('text').send(boardState);
+        });
+        
+        await new Promise<void>((resolve) => {
+            server = app.listen(port, () => resolve());
+        });
+        
+        // Replace unicorn with sunshine
+        const response = await fetch(`http://localhost:${port}/replace/player1/unicorn/sunshine`);
+        assert.strictEqual(response.status, 200);
+        
+        // Verify replacement worked
+        assert.strictEqual(board.pictureAt(0, 0), 'sunshine');
+        assert.strictEqual(board.pictureAt(0, 1), 'rainbow');
+        assert.strictEqual(board.pictureAt(1, 0), 'sunshine');
+        assert.strictEqual(board.pictureAt(1, 1), 'rainbow');
     });
 });
