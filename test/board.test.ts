@@ -367,3 +367,120 @@ describe('Server /replace endpoint', function() {
         assert.strictEqual(board.pictureAt(1, 1), 'rainbow');
     });
 });
+
+describe('Board watch functionality', function() {
+    this.timeout(5000);
+
+    it('watch resolves when a card flips face-up', async function() {
+        const b = await Board.parseFromFile(tmpfile('1x2\nA\nB\n'));
+        b.registerPlayer('p1');
+        b.registerPlayer('p2');
+
+        // Start watching before the change
+        const watchPromise = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p2', resolve);
+        });
+
+        // p1 flips a card
+        await b.flipUp('p1', 0, 0);
+
+        // p2's watch should resolve with the updated state
+        const state = await watchPromise;
+        assert.match(state, /1x2/);
+        assert.match(state, /up A/); // Card is face-up
+    });
+
+    it('watch resolves when a card flips face-down', async function() {
+        const b = await Board.parseFromFile(tmpfile('1x3\nA\nB\nC\n'));
+        b.registerPlayer('p1');
+        b.registerPlayer('p2');
+
+        // Create a mismatch to get face-up, uncontrolled cards
+        await b.flipUp('p1', 0, 0);
+        await b.flipUp('p1', 0, 1);
+
+        // Start watching
+        const watchPromise = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p2', resolve);
+        });
+
+        // Next first card triggers 3-B (flip down)
+        await b.flipUp('p1', 0, 2);
+
+        // Watch should resolve
+        const state = await watchPromise;
+        assert.match(state, /down/); // Cards flipped down
+    });
+
+    it('watch resolves when cards are removed (match)', async function() {
+        const b = await Board.parseFromFile(tmpfile('1x3\nA\nA\nB\n'));
+        b.registerPlayer('p1');
+        b.registerPlayer('p2');
+
+        // Make a match
+        await b.flipUp('p1', 0, 0);
+        await b.flipUp('p1', 0, 1);
+
+        // Start watching
+        const watchPromise = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p2', resolve);
+        });
+
+        // Next first card triggers 3-A (removal)
+        await b.flipUp('p1', 0, 2);
+
+        // Watch should resolve
+        const state = await watchPromise;
+        assert.match(state, /none/); // Cards removed
+    });
+
+    it('watch resolves when pictures change (map)', async function() {
+        const b = await Board.parseFromFile(tmpfile('1x2\nA\nB\n'));
+        b.registerPlayer('p1');
+        b.registerPlayer('p2');
+
+        // Start watching
+        const watchPromise = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p2', resolve);
+        });
+
+        // Transform cards
+        await b.map(async (card: string) => card + '-new');
+
+        // Watch should resolve
+        await watchPromise;
+        
+        // Verify the transformation happened
+        assert.strictEqual(b.pictureAt(0, 0), 'A-new');
+        assert.strictEqual(b.pictureAt(0, 1), 'B-new');
+    });
+
+    it('multiple watchers all get notified', async function() {
+        const b = await Board.parseFromFile(tmpfile('1x2\nA\nB\n'));
+        b.registerPlayer('p1');
+        b.registerPlayer('p2');
+        b.registerPlayer('p3');
+
+        // Start multiple watchers
+        const watch1 = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p1', resolve);
+        });
+        const watch2 = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p2', resolve);
+        });
+        const watch3 = new Promise<string>((resolve) => {
+            b.addChangeWatcher('p3', resolve);
+        });
+
+        // Make a change
+        await b.flipUp('p1', 0, 0);
+
+        // All watches should resolve
+        const [state1, state2, state3] = await Promise.all([watch1, watch2, watch3]);
+        
+        assert.match(state1, /my A/); // p1 sees their control
+        assert.match(state2, /up A/); // p2 sees it face-up
+        assert.match(state3, /up A/); // p3 sees it face-up
+    });
+
+});

@@ -13,6 +13,21 @@ class Deferred<T> {
     public resolve!: (value: T) => void;
     public reject!: (reason?: unknown) => void;
 
+     // Rep invariant:
+    //   - promise is a valid Promise<T>
+    //   - resolve and reject are functions assigned during construction
+    //
+    // Abstraction function:
+    //   AF(promise, resolve, reject) = A deferred promise that can be resolved or rejected
+    //     externally using the resolve/reject methods. The promise field contains the
+    //     underlying Promise<T> that will be fulfilled when resolve() or reject() is called.
+    //
+    // Safety from rep exposure:
+    //   - promise field is readonly and exposed, but Promises are immutable once created
+    //   - resolve and reject are functions (immutable references), and their invocation
+    //     only affects the internal promise state, not the Deferred object itself
+    //   - No mutable objects are exposed to clients
+
     /**
      * Create a new deferred promise.
      * The promise can be resolved or rejected later using the resolve/reject methods.
@@ -46,29 +61,48 @@ export class Board {
     // Track pending control attempts for each cell
     private readonly waitingForControl: Map<string, Deferred<void>[]>;
     private readonly lingering: Map<string, Array<{ row: number; col: number }>>;
-    private changeResolvers: Map<string, ((value: string) => void)[]> = new Map();
+    private readonly changeResolvers: Map<string, ((value: string) => void)[]> = new Map();
     
     // Rep invariant:
     //   - rows, cols are positive integers (>= 1)
-    //   - cards, faceUp, controller are all rowsxcols 2D arrays
+    //   - cards, faceUp, controller are all rows×cols 2D arrays
     //   - for all r,c: if cards[r][c] is null, then faceUp[r][c] is false and controller[r][c] is null
     //   - for all r,c: if cards[r][c] is a string, it's nonempty with no whitespace
     //   - for all r,c: if controller[r][c] is not null, it exists as a key in players map
+    //   - waitingForControl maps "row,col" strings to arrays of Deferred<void>
+    //   - lingering maps player ids to arrays of {row, col} positions
+    //   - changeResolvers maps player ids to arrays of callback functions
+    //   - all player ids in players map are nonempty strings with no whitespace
     //
     // Abstraction function:
-    //   AF(rows, cols, cards, faceUp, controller, players) =
-    //     A game board with dimensions rowsxcols where:
+    //   AF(rows, cols, cards, faceUp, controller, players, waitingForControl, lingering, changeResolvers) =
+    //     A game board with dimensions rows×cols where:
     //     - cards[r][c] is the picture at position (r,c), or null if empty
     //     - faceUp[r][c] indicates if card at (r,c) is face-up
     //     - controller[r][c] is the player id who controls the face-up card at (r,c), or null
-    //     - players maps player ids to Player objects tracking game statistics
+    //     - players maps player ids to Player objects tracking game statistics and state
+    //     - waitingForControl tracks which players are blocked waiting to flip specific cards
+    //     - lingering tracks face-up uncontrolled cards that should be flipped down per player
+    //     - changeResolvers tracks watchers waiting for the next board state change
     //
     // Safety from rep exposure:
-    //   - All fields are private and readonly 
-    //   - Constructor deep-copies the layout array into cards[][]
-    //   - Observers return primitives, null, or fresh arrays (listPlayers), never references to internal arrays
-    //   - No methods return references to cards[][], faceUp[][], controller[][], or players map
-    //   - Player objects are mutable but encapsulated; registerPlayer returns them but they're already in the map
+    //   - All fields are private and readonly references (though the objects they point to are mutable)
+    //   - Constructor deep-copies the layout array into cards[][], creating new array objects
+    //   - numRows() and numCols() return immutable primitives
+    //   - pictureAt() returns string | null (immutable)
+    //   - isFaceUp() returns boolean (immutable primitive)
+    //   - controllerAt() returns string | null (immutable)
+    //   - listPlayers() returns a fresh array created by Array.from()
+    //   - render() returns a string (immutable)
+    //   - picturesDump() returns a string (immutable)
+    //   - registerPlayer() returns Player objects that are in the internal map, but Player
+    //     is also an ADT with its own rep invariant and safety from rep exposure
+    //   - getFirstCard() and getSecondCard() in Player return defensive copies: { ...this.card }
+    //   - No methods return direct references to cards[][], faceUp[][], controller[][],
+    //     waitingForControl, lingering, or changeResolvers maps
+    //   - addChangeWatcher() accepts callback functions but stores them internally;
+    //     clients cannot access the changeResolvers map
+    //   - map() mutates cards in place but is a controlled operation that maintains invariants
 
     /**
      * Create a new board with the given layout.
