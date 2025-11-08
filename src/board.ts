@@ -46,7 +46,7 @@ export class Board {
     // Track pending control attempts for each cell
     private readonly waitingForControl: Map<string, Deferred<void>[]>;
     private readonly lingering: Map<string, Array<{ row: number; col: number }>>;
-
+    private changeResolvers: Map<string, ((value: string) => void)[]> = new Map();
     
     // Rep invariant:
     //   - rows, cols are positive integers (>= 1)
@@ -103,6 +103,7 @@ export class Board {
             this.controller.push(rctrl);
         }
         this.checkRep();
+
     }
 
     /**
@@ -163,8 +164,37 @@ export class Board {
             }
         }
         this.checkRep();
+        this.notifyChange();
     }
 
+    /**
+     * Register a callback to be notified when the board state changes.
+     * The callback will be invoked with the updated board state (as seen by the player)
+     * @param playerId identifier of the player watching for changes
+     * @param resolver callback function that receives the updated board state as a string
+     */
+    public addChangeWatcher(playerId: string, resolver: (value: string) => void): void {
+    let list = this.changeResolvers.get(playerId);
+    if (!list) {
+        list = [];
+        this.changeResolvers.set(playerId, list);
+    }
+    list.push(resolver);
+}
+    /**
+     * Notify all registered watchers of a board state change.
+     * Each watcher receives the current board state from their perspective.
+     * All watchers are automatically cleared after notification (one-time notification).
+     */
+    private notifyChange(): void {
+        for (const [playerId, resolvers] of this.changeResolvers.entries()) {
+            const state = this.render(playerId);
+            for (const resolve of resolvers) {
+                resolve(state);
+            }
+        }
+        this.changeResolvers.clear();
+    }
 
     /**
      * Get the number of rows on this board.
@@ -369,6 +399,7 @@ export class Board {
             player.recordFlip();
             console.log(`[BOARD] ${playerId} CONTROLS FIRST at (${row},${col}) via 1-B (flipped face up)`);
             this.checkRep();
+            this.notifyChange();
             return;
         }
         // 1-C: Card is face up but not controlled - take control
@@ -398,6 +429,7 @@ export class Board {
         player.setFirstCard({ row, col });
         player.recordFlip();
         this.checkRep();
+        this.notifyChange();
     } else {
         // Second card flip
         const firstCard = player.getFirstCard();
@@ -475,6 +507,7 @@ export class Board {
             // Cards remain face up until next first card flip (3-B)
         }
         this.checkRep();
+        this.notifyChange();
     }
 }
 
@@ -623,6 +656,7 @@ export class Board {
         controllerRow[col] = null;
 
         this.checkRep();
+        this.notifyChange();
     }
 
   // ==============================

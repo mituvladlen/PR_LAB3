@@ -59,6 +59,8 @@ export async function map(board: Board, playerId: string, f: (card: string) => P
  * @returns the updated board state when a change is detected
  */
 export async function watch(board: Board, playerId: string): Promise<string> {
-    throw new Error('watch function not implemented');
-    // implement with glue code only, at most three lines
+    board.registerPlayer(playerId);
+    const { promise, resolve } = Promise.withResolvers<string>();
+    board.addChangeWatcher(playerId, resolve);
+    return promise;
 }
