@@ -19,8 +19,8 @@ const MAX_WATCH_TIMEOUT_MS = 2000;
 async function simulationMain(): Promise<void> {
     const filename = 'boards/ab.txt';
     const board: Board = await Board.parseFromFile(filename);
-    const players = 3;                 // simulate multi-player
-    const triesPerPlayer = 20;         // each player will attempt this many flips
+    const players = 4;                 // simulate multi-player
+    const triesPerPlayer = 100;         // each player will attempt this many flips
     const maxDelayMs = 5;              // tiny delays to force interleavings
     
     // Utility to yield control briefly 
@@ -61,6 +61,7 @@ async function simulationMain(): Promise<void> {
         'playerP1': colors.cyan,
         'playerP2': colors.green,
         'playerP3': colors.yellow,
+        'playerP4': colors.red,
         'watcher': colors.white
     };
     
@@ -236,8 +237,8 @@ async function simulationMain(): Promise<void> {
 async function simulationWatchMain(): Promise<void> {
     const filename = 'boards/ab.txt';
     const board: Board = await Board.parseFromFile(filename);
-    const players = 3;
-    const movesPerPlayer = 10;
+    const players = 4;
+    const movesPerPlayer = 100;
     const maxDelayMs = 5;
     
     const timeout = (ms: number): Promise<void> => new Promise<void>(res => setTimeout(res, ms));
@@ -272,7 +273,8 @@ async function simulationWatchMain(): Promise<void> {
     const playerColors: Record<string, string> = {
         'playerP1': colors.cyan,
         'playerP2': colors.green,
-        'playerP3': colors.yellow
+        'playerP3': colors.yellow,
+        'playerP4': colors.red
     };
     
     const log = (pid: string, message: string, details?: string): void => {
